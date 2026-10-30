@@ -1,10 +1,9 @@
 # bevy_box3d
 
 Box3D's native C17 engine, statically linked into a standalone Bevy ECS plugin.
-This checkout uses the sibling Bevy **0.20.0-dev** crates in `../../bevy` so
-components share the same Bevy types as applications using that checkout.
-Use the same Bevy source in your application; a crates.io Bevy dependency has
-different types even if its version looks similar.
+It depends on the crates.io Bevy **0.20.0** sub-crates, so its components are
+the same types as an application's `bevy = "0.20.0"`. An application built on a
+local Bevy checkout must `[patch.crates-io]` these crates to that checkout.
 
 ## Build and run
 
@@ -19,7 +18,7 @@ cargo test --manifest-path bevy_box3d/Cargo.toml
 cargo run --manifest-path bevy_box3d/Cargo.toml --example falling_box
 ```
 
-In an application using the same local Bevy checkout:
+In an application using Bevy 0.20:
 
 ```toml
 [dependencies]
@@ -61,8 +60,10 @@ fn setup(mut commands: Commands) {
   A normal game must install Bevy's `TimePlugin`, included in `DefaultPlugins`
   and `MinimalPlugins`. The example drives `FixedUpdate` manually.
 - Changes to position, rotation, velocity, body type, collider, or material
-  synchronize before each step. Dynamic and kinematic results write back after
-  stepping. Direct transform edits teleport and wake the body.
+  synchronize before each step. After stepping, only the bodies Box3D reports
+  as moved (awake, or just fallen asleep) are read back, so sleeping and static
+  bodies cost nothing and their `Transform` is never marked changed. Direct
+  transform edits teleport and wake the body.
 - `ExternalForce` persists each step. `ExternalImpulse` applies once and is
   zeroed. Zero forces/impulses do not keep sleeping bodies awake.
 - Put gameplay input systems `.before(Box3dSet)` and result readers
@@ -87,5 +88,5 @@ applications should use the ECS interface. The adapter compiles against
 Box3D's headers, keeping its definition structs and inline ID helpers in C.
 
 This crate is not configured for crates.io publishing because it depends on
-local Bevy and Box3D checkouts. Box3D retains its upstream MIT license in
+a local Box3D checkout. Box3D retains its upstream MIT license in
 `../box3d/LICENSE`.

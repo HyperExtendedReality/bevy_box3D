@@ -177,6 +177,9 @@ pub struct ExternalImpulse {
 pub struct PhysicsWorld {
     id: u32,
     bodies: HashMap<Entity, NativeBody>,
+    // Native body id -> entity, to apply Box3D's move events.
+    entities: HashMap<u64, Entity>,
+    moved: Vec<u64>,
 }
 
 impl Default for PhysicsWorld {
@@ -188,6 +191,8 @@ impl Default for PhysicsWorld {
         Self {
             id,
             bodies: HashMap::new(),
+            entities: HashMap::new(),
+            moved: Vec::new(),
         }
     }
 }
@@ -297,11 +302,14 @@ fn simulate(
     // serializes native calls, input data was validated, and pointer arguments
     // reference live arrays/structs for each call. Box3D copies shape definitions.
     unsafe {
+        let physics = &mut *physics;
+        let entities = &mut physics.entities;
         physics.bodies.retain(|entity, body| {
             if query.get(*entity).is_ok() {
                 return true;
             }
             ffi::bb_body_destroy(body.id);
+            entities.remove(&body.id);
             false
         });
         let world_id = physics.id;
@@ -314,6 +322,7 @@ fn simulate(
             let body = physics.bodies.entry(entity).or_insert_with(|| {
                 let id = ffi::bb_body_create(world_id, *body_type as i32, &input);
                 assert_ne!(id, 0, "Box3D could not create a body");
+                physics.entities.insert(id, entity);
                 NativeBody {
                     id,
                     shape: 0,
@@ -378,11 +387,20 @@ fn simulate(
             dt,
             settings.substeps as i32,
         );
-        for (entity, _, _, _, mut transform, mut velocity, _, _, _) in &mut query {
-            let body = physics
-                .bodies
-                .get_mut(&entity)
-                .expect("body synchronized above");
+        // Read back only the bodies Box3D moved: sleeping and static bodies keep
+        // their state, and their transforms stay unchanged for change detection.
+        let count = ffi::bb_world_moved(physics.id, std::ptr::null_mut(), 0);
+        physics.moved.resize(count.max(0) as usize, 0);
+        ffi::bb_world_moved(physics.id, physics.moved.as_mut_ptr(), count);
+        for id in &physics.moved {
+            let Some(&entity) = physics.entities.get(id) else {
+                continue;
+            };
+            let (Ok((_, _, _, _, mut transform, mut velocity, _, _, _)), Some(body)) =
+                (query.get_mut(entity), physics.bodies.get_mut(&entity))
+            else {
+                continue;
+            };
             ffi::bb_body_get_state(body.id, &mut body.state);
             let position = Vec3::from_array(body.state.position);
             let rotation = Quat::from_array(body.state.rotation);

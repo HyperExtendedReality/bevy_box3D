@@ -16,6 +16,7 @@ unsafe extern "C" {
     pub fn bb_world_create(gravity: *const f32) -> u32;
     pub fn bb_world_destroy(world: u32);
     pub fn bb_world_step(world: u32, gravity: *const f32, dt: f32, substeps: i32);
+    pub fn bb_world_moved(world: u32, bodies: *mut u64, capacity: i32) -> i32;
     pub fn bb_body_create(world: u32, body_type: i32, state: *const State) -> u64;
     pub fn bb_body_destroy(body: u64);
     pub fn bb_body_set_type(body: u64, body_type: i32);

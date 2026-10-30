@@ -7,11 +7,11 @@ description = "Box3D physics integrated with Bevy ECS"
 publish = false
 
 [dependencies]
-bevy_app = { path = "../../bevy/crates/bevy_app", default-features = false, features = ["std"] }
-bevy_ecs = { path = "../../bevy/crates/bevy_ecs", default-features = false, features = ["std"] }
-bevy_math = { path = "../../bevy/crates/bevy_math", default-features = false, features = ["std"] }
-bevy_time = { path = "../../bevy/crates/bevy_time", default-features = false, features = ["std"] }
-bevy_transform = { path = "../../bevy/crates/bevy_transform", default-features = false, features = ["std", "bevy-support"] }
+bevy_app = { version = "0.20.0", default-features = false, features = ["std"] }
+bevy_ecs = { version = "0.20.0", default-features = false, features = ["std"] }
+bevy_math = { version = "0.20.0", default-features = false, features = ["std"] }
+bevy_time = { version = "0.20.0", default-features = false, features = ["std"] }
+bevy_transform = { version = "0.20.0", default-features = false, features = ["std", "bevy-support"] }
 
 [build-dependencies]
 cc = "1"

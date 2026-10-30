@@ -26,6 +26,16 @@ void bb_world_step(uint32_t world, const float gravity[3], float dt, int32_t sub
     b3World_Step(id, dt, substeps);
 }
 
+// Bodies Box3D moved in the last step (awake, or just fallen asleep). Writes up to
+// capacity ids and returns the full count; the events last until the next step.
+int32_t bb_world_moved(uint32_t world, uint64_t* bodies, int32_t capacity) {
+    b3BodyEvents events = b3World_GetBodyEvents(b3LoadWorldId(world));
+    for (int32_t i = 0; i < events.moveCount && i < capacity; ++i) {
+        bodies[i] = b3StoreBodyId(events.moveEvents[i].bodyId);
+    }
+    return events.moveCount;
+}
+
 uint64_t bb_body_create(uint32_t world, int32_t type, const bbState* state) {
     b3BodyDef def = b3DefaultBodyDef();
     def.type = (b3BodyType)type;
