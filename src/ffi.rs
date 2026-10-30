@@ -25,4 +25,23 @@ unsafe extern "C" {
     pub fn bb_body_apply(body: u64, force: *const f32, torque: *const f32, impulse: i32);
     pub fn bb_shape_create(body: u64, kind: i32, size: *const f32, material: *const f32) -> u64;
     pub fn bb_shape_destroy(shape: u64);
+    pub fn bb_hull_create(points: *const f32, count: i32) -> *mut core::ffi::c_void;
+    pub fn bb_hull_destroy(hull: *mut core::ffi::c_void);
+    pub fn bb_hull_planes(hull: *const core::ffi::c_void, planes: *mut f32, capacity: i32) -> i32;
+    pub fn bb_hull_bounds(hull: *const core::ffi::c_void, lower: *mut f32, upper: *mut f32);
+    pub fn bb_mesh_create(
+        vertices: *const f32,
+        vertex_count: i32,
+        indices: *const i32,
+        triangle_count: i32,
+    ) -> *mut core::ffi::c_void;
+    pub fn bb_mesh_destroy(mesh: *mut core::ffi::c_void);
+    pub fn bb_mesh_counts(mesh: *const core::ffi::c_void, nodes: *mut i32, triangles: *mut i32);
+    pub fn bb_mesh_export(mesh: *const core::ffi::c_void, nodes: *mut f32, triangles: *mut f32);
+    pub fn bb_shape_create_geometry(
+        body: u64,
+        kind: i32,
+        geometry: *const core::ffi::c_void,
+        material: *const f32,
+    ) -> u64;
 }

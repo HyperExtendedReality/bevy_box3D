@@ -75,12 +75,17 @@ fn setup(mut commands: Commands) {
   must be unparented: `Transform` is world space. Transform scale is visual
   only; set collider dimensions explicitly. Invalid input panics in Rust
   before entering the native engine.
-- Each entity supports one centered cuboid, sphere, or Y-aligned capsule.
-  Compound shapes, meshes, height fields, joints, sensors, collision events,
+- Each entity supports one centered cuboid, sphere, Y-aligned capsule,
+  `ConvexHull`, or `TriMesh`. Build a hull or mesh once (`ConvexHull::new`,
+  `TriMesh::new`) and clone it onto many bodies: clones share Box3D's processed
+  data and compare by identity. Box3D only creates mesh contacts on static
+  bodies. Both expose their planes or tree and triangles for renderers.
+  Compound shapes, height fields, joints, sensors, collision events,
   spatial queries, interpolation, and debug rendering are not wrapped yet.
 - The native engine uses one worker. Native calls are serialized across worlds
-  because Box3D has shared global state. No unsafe `Send`/`Sync` implementations
-  or user-visible native handles are needed.
+  because Box3D has shared global state. The only unsafe `Send`/`Sync`
+  implementations are for hull and mesh data, which is immutable after
+  creation; no native handles are user-visible.
 
 `ffi` exposes the unsafe C adapter for low-level use. Its integer handles are
 opaque; callers must manage lifetimes and serialize all native calls. Safe

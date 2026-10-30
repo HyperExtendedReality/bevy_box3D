@@ -1,5 +1,7 @@
 #include "box3d/box3d.h"
 
+#include <string.h>
+
 // Only fixed-width integers and float arrays cross the FFI boundary.
 typedef struct bbState {
     float position[3];
@@ -107,3 +109,88 @@ uint64_t bb_shape_create(uint64_t body, int32_t kind, const float size[3], const
 }
 
 void bb_shape_destroy(uint64_t shape) { b3DestroyShape(b3LoadShapeId(shape), true); }
+
+// Convex hulls and triangle meshes are created once and shared by every body
+// using them. A hull shape clones its hull; a mesh shape keeps a reference, so
+// a mesh must outlive its shapes. NULL when the input is degenerate.
+void* bb_hull_create(const float* points, int32_t count) {
+    return b3CreateHull((const b3Vec3*)points, count, B3_MAX_HULL_VERTICES);
+}
+
+void bb_hull_destroy(void* hull) { b3DestroyHull((b3HullData*)hull); }
+
+// Face planes (normal, offset), up to capacity; returns the face count.
+int32_t bb_hull_planes(const void* hull, float* planes, int32_t capacity) {
+    const b3HullData* h = (const b3HullData*)hull;
+    const b3Plane* p = b3GetHullPlanes(h);
+    for (int32_t i = 0; i < h->faceCount && i < capacity; ++i) {
+        planes[4 * i + 0] = p[i].normal.x;
+        planes[4 * i + 1] = p[i].normal.y;
+        planes[4 * i + 2] = p[i].normal.z;
+        planes[4 * i + 3] = p[i].offset;
+    }
+    return h->faceCount;
+}
+
+void bb_hull_bounds(const void* hull, float lower[3], float upper[3]) {
+    b3AABB box = ((const b3HullData*)hull)->aabb;
+    lower[0] = box.lowerBound.x, lower[1] = box.lowerBound.y, lower[2] = box.lowerBound.z;
+    upper[0] = box.upperBound.x, upper[1] = box.upperBound.y, upper[2] = box.upperBound.z;
+}
+
+void* bb_mesh_create(const float* vertices, int32_t vertex_count, const int32_t* indices, int32_t triangle_count) {
+    b3MeshDef def = {0};
+    def.vertices = (b3Vec3*)vertices;
+    def.indices = (int32_t*)indices;
+    def.vertexCount = vertex_count;
+    def.triangleCount = triangle_count;
+    def.identifyEdges = true;
+    return b3CreateMesh(&def, NULL, 0);
+}
+
+void bb_mesh_destroy(void* mesh) { b3DestroyMesh((b3MeshData*)mesh); }
+
+void bb_mesh_counts(const void* mesh, int32_t* nodes, int32_t* triangles) {
+    const b3MeshData* m = (const b3MeshData*)mesh;
+    *nodes = m->nodeCount;
+    *triangles = m->triangleCount;
+}
+
+// The mesh's own tree, 8 floats a node: lower (w: the right child's index, or a
+// leaf's first triangle) and upper (w: 0 inner, else the leaf's triangle count),
+// indices as int bits, the left child right after its parent; and its triangles
+// in leaf order, 12 floats each (three padded corners).
+void bb_mesh_export(const void* mesh, float* nodes, float* triangles) {
+    const b3MeshData* m = (const b3MeshData*)mesh;
+    const b3MeshNode* n = b3GetMeshNodes(m);
+    for (int32_t i = 0; i < m->nodeCount; ++i) {
+        int32_t leaf = n[i].data.asLeaf.type == 3;
+        int32_t link = leaf ? (int32_t)n[i].triangleOffset : i + (int32_t)n[i].data.asNode.childOffset;
+        int32_t count = leaf ? (int32_t)n[i].data.asLeaf.triangleCount : 0;
+        float* o = nodes + 8 * i;
+        o[0] = n[i].lowerBound.x, o[1] = n[i].lowerBound.y, o[2] = n[i].lowerBound.z;
+        memcpy(&o[3], &link, sizeof link);
+        o[4] = n[i].upperBound.x, o[5] = n[i].upperBound.y, o[6] = n[i].upperBound.z;
+        memcpy(&o[7], &count, sizeof count);
+    }
+    const b3Vec3* v = b3GetMeshVertices(m);
+    const b3MeshTriangle* t = b3GetMeshTriangles(m);
+    for (int32_t i = 0; i < m->triangleCount; ++i) {
+        const int32_t corner[3] = {t[i].index1, t[i].index2, t[i].index3};
+        for (int k = 0; k < 3; ++k) {
+            float* o = triangles + 12 * i + 4 * k;
+            o[0] = v[corner[k]].x, o[1] = v[corner[k]].y, o[2] = v[corner[k]].z, o[3] = 0.0f;
+        }
+    }
+}
+
+uint64_t bb_shape_create_geometry(uint64_t body, int32_t kind, const void* geometry, const float material[3]) {
+    b3ShapeDef def = b3DefaultShapeDef();
+    def.density = material[0];
+    def.baseMaterial.friction = material[1];
+    def.baseMaterial.restitution = material[2];
+    b3BodyId id = b3LoadBodyId(body);
+    b3ShapeId shape = kind == 3 ? b3CreateHullShape(id, &def, (const b3HullData*)geometry)
+                                : b3CreateMeshShape(id, &def, (const b3MeshData*)geometry, (b3Vec3){1, 1, 1});
+    return b3StoreShapeId(shape);
+}

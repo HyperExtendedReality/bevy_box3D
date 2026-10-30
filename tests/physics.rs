@@ -57,7 +57,7 @@ fn colliders_fall_and_rest_on_ground() {
             app.world_mut()
                 .spawn((
                     RigidBody::Dynamic,
-                    *shape,
+                    shape.clone(),
                     Transform::from_xyz(i as f32 * 3.0 - 3.0, 4.0, 0.0),
                 ))
                 .id()
@@ -259,4 +259,49 @@ fn time_plugin_drives_physics_and_world_replacement_rebuilds_bodies() {
     app.update();
     assert!(app.world().resource::<PhysicsWorld>().contains(entity));
     assert!(app.world().get::<Transform>(entity).unwrap().translation.x > x);
+}
+
+#[test]
+fn convex_hull_rests_on_triangle_mesh_ground() {
+    let mut app = app(Vec3::new(0.0, -9.81, 0.0));
+    // A 20 m square floor at y = 0 from two counter-clockwise triangles (seen from above).
+    let floor = TriMesh::new(
+        &[
+            Vec3::new(-10.0, 0.0, -10.0),
+            Vec3::new(-10.0, 0.0, 10.0),
+            Vec3::new(10.0, 0.0, 10.0),
+            Vec3::new(10.0, 0.0, -10.0),
+        ],
+        &[[0, 1, 2], [0, 2, 3]],
+    )
+    .expect("floor mesh");
+    assert_eq!(floor.triangles().len(), 6);
+    assert!(TriMesh::new(&[Vec3::ZERO; 3], &[[0, 1, 3]]).is_none());
+    let corners: Vec<_> = (0..8)
+        .map(|i| Vec3::new((i & 1) as f32 - 0.5, ((i >> 1) & 1) as f32 - 0.5, (i >> 2) as f32 - 0.5))
+        .collect();
+    let cube = ConvexHull::new(&corners).expect("cube hull");
+    assert_eq!(cube.planes().len(), 6);
+    assert!(ConvexHull::new(&corners[..3]).is_none());
+    app.world_mut()
+        .spawn((RigidBody::Static, Collider::TriMesh(floor), Transform::default()));
+    let body = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::ConvexHull(cube.clone()),
+            Transform::from_xyz(0.0, 3.0, 0.0),
+        ))
+        .id();
+    step(&mut app, 240);
+    let height = app.world().get::<Transform>(body).unwrap().translation.y;
+    assert!((height - 0.5).abs() < 0.08, "hull rests at {height}");
+    // Replacing and despawning release the shared geometry without deadlocking.
+    app.world_mut()
+        .entity_mut(body)
+        .insert(Collider::ConvexHull(ConvexHull::new(&corners).unwrap()));
+    step(&mut app, 1);
+    app.world_mut().despawn(body);
+    step(&mut app, 1);
+    assert_eq!(app.world().resource::<PhysicsWorld>().body_count(), 1);
 }

@@ -7,7 +7,12 @@ use bevy_ecs::prelude::*;
 use bevy_math::{Quat, Vec3};
 use bevy_time::{Fixed, Time};
 use bevy_transform::components::Transform;
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    ffi::c_void,
+    ptr::NonNull,
+    sync::{Arc, Mutex},
+};
 
 // ponytail: serialize native calls across worlds; use per-world locks once
 // Box3D's global creation/allocator state supports concurrent access.
@@ -61,7 +66,7 @@ pub enum RigidBody {
 
 /// One centered collider per body, in meters. Changes replace the native shape
 /// without replacing the body or losing its velocity.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Debug, Clone, PartialEq)]
 pub enum Collider {
     Cuboid {
         half_extents: Vec3,
@@ -74,11 +79,20 @@ pub enum Collider {
         radius: f32,
         half_height: f32,
     },
+    /// A convex hull in body space; build it once and clone it to share it.
+    ConvexHull(ConvexHull),
+    /// A triangle mesh in body space. Box3D only creates mesh contacts on
+    /// static bodies, so use it for level geometry.
+    TriMesh(TriMesh),
 }
 
 impl Collider {
-    fn native(self) -> (i32, [f32; 3]) {
-        match self {
+    /// The native shape kind, its sizes, and its shared geometry (null for the
+    /// analytic shapes).
+    fn native(&self) -> (i32, [f32; 3], *const c_void) {
+        let (kind, size) = match *self {
+            Self::ConvexHull(ref hull) => return (3, [0.0; 3], hull.0.native.as_ptr()),
+            Self::TriMesh(ref mesh) => return (4, [0.0; 3], mesh.0.native.as_ptr()),
             Self::Cuboid { half_extents } => {
                 assert!(
                     half_extents.is_finite() && half_extents.min_element() > 0.0,
@@ -106,7 +120,188 @@ impl Collider {
                 );
                 (2, [radius, half_height, 0.0])
             }
+        };
+        (kind, size, std::ptr::null())
+    }
+}
+
+/// Box3D's processed hull or mesh, created once and read-only afterwards, with
+/// copies of what a renderer needs to trace it.
+struct Geometry {
+    native: NonNull<c_void>,
+    mesh: bool,
+    lower: Vec3,
+    upper: Vec3,
+    planes: Vec<[f32; 4]>,
+    nodes: Vec<[f32; 4]>,
+    triangles: Vec<[f32; 4]>,
+}
+
+// SAFETY: the native data is never written after creation; Box3D only reads it
+// (under NATIVE_LOCK), and it is destroyed once, when the last owner drops.
+unsafe impl Send for Geometry {}
+unsafe impl Sync for Geometry {}
+
+impl Drop for Geometry {
+    fn drop(&mut self) {
+        let _guard = NATIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: created by the matching constructor; shapes referencing a mesh
+        // hold this Arc and are destroyed before it drops.
+        unsafe {
+            if self.mesh {
+                ffi::bb_mesh_destroy(self.native.as_ptr());
+            } else {
+                ffi::bb_hull_destroy(self.native.as_ptr());
+            }
         }
+    }
+}
+
+impl std::fmt::Debug for Geometry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(if self.mesh { "TriMesh" } else { "ConvexHull" })
+            .field("lower", &self.lower)
+            .field("upper", &self.upper)
+            .field("planes", &self.planes.len())
+            .field("triangles", &(self.triangles.len() / 3))
+            .finish()
+    }
+}
+
+/// A convex hull computed by Box3D (at most 128 vertices). Cloning shares it;
+/// colliders compare hulls by identity.
+#[derive(Clone, Debug)]
+pub struct ConvexHull(Arc<Geometry>);
+
+impl PartialEq for ConvexHull {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl ConvexHull {
+    /// The hull of `points` (body space, metres); `None` when they are not
+    /// finite or span no volume.
+    pub fn new(points: &[Vec3]) -> Option<Self> {
+        if points.len() < 4
+            || points.len() > i32::MAX as usize
+            || !points.iter().all(|p| p.is_finite())
+        {
+            return None;
+        }
+        let _guard = NATIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: Vec3 is three packed f32; the count matches the slice.
+        let native = NonNull::new(unsafe {
+            ffi::bb_hull_create(points.as_ptr().cast(), points.len() as i32)
+        })?;
+        let (mut lower, mut upper) = ([0.0; 3], [0.0; 3]);
+        // SAFETY: a live hull; output buffers are sized from its face count.
+        let planes = unsafe {
+            ffi::bb_hull_bounds(native.as_ptr(), lower.as_mut_ptr(), upper.as_mut_ptr());
+            let count = ffi::bb_hull_planes(native.as_ptr(), std::ptr::null_mut(), 0);
+            let mut planes = vec![[0.0; 4]; count.max(0) as usize];
+            ffi::bb_hull_planes(native.as_ptr(), planes.as_mut_ptr().cast(), count);
+            planes
+        };
+        Some(Self(Arc::new(Geometry {
+            native,
+            mesh: false,
+            lower: Vec3::from_array(lower),
+            upper: Vec3::from_array(upper),
+            planes,
+            nodes: Vec::new(),
+            triangles: Vec::new(),
+        })))
+    }
+
+    /// Face planes: unit normal and offset, `dot(normal, p) <= offset` inside.
+    pub fn planes(&self) -> &[[f32; 4]] {
+        &self.0.planes
+    }
+
+    /// Body-space bounds.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        (self.0.lower, self.0.upper)
+    }
+}
+
+/// A triangle mesh with Box3D's bounding volume tree. Cloning shares it;
+/// colliders compare meshes by identity.
+#[derive(Clone, Debug)]
+pub struct TriMesh(Arc<Geometry>);
+
+impl PartialEq for TriMesh {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl TriMesh {
+    /// A mesh of counter-clockwise triangles over `vertices` (body space,
+    /// metres); `None` when vertices aren't finite, an index is out of range, or
+    /// every triangle is degenerate.
+    pub fn new(vertices: &[Vec3], indices: &[[u32; 3]]) -> Option<Self> {
+        let fits = |n: usize| n <= i32::MAX as usize;
+        if vertices.len() < 3
+            || indices.is_empty()
+            || !fits(vertices.len())
+            || !fits(indices.len())
+            || !vertices.iter().all(|v| v.is_finite())
+            || indices.iter().flatten().any(|&i| i as usize >= vertices.len())
+        {
+            return None;
+        }
+        let _guard = NATIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: validated counts and in-range indices; Box3D copies the input.
+        let native = NonNull::new(unsafe {
+            ffi::bb_mesh_create(
+                vertices.as_ptr().cast(),
+                vertices.len() as i32,
+                indices.as_ptr().cast(),
+                indices.len() as i32,
+            )
+        })?;
+        let (mut node_count, mut triangle_count) = (0, 0);
+        // SAFETY: a live mesh; output buffers are sized from its own counts.
+        let (nodes, triangles) = unsafe {
+            ffi::bb_mesh_counts(native.as_ptr(), &mut node_count, &mut triangle_count);
+            let mut nodes = vec![[0.0; 4]; 2 * node_count.max(0) as usize];
+            let mut triangles = vec![[0.0; 4]; 3 * triangle_count.max(0) as usize];
+            ffi::bb_mesh_export(
+                native.as_ptr(),
+                nodes.as_mut_ptr().cast(),
+                triangles.as_mut_ptr().cast(),
+            );
+            (nodes, triangles)
+        };
+        let root = |i: usize| nodes.get(i).map_or(Vec3::ZERO, |n| Vec3::new(n[0], n[1], n[2]));
+        Some(Self(Arc::new(Geometry {
+            native,
+            mesh: true,
+            lower: root(0),
+            upper: root(1),
+            planes: Vec::new(),
+            nodes,
+            triangles,
+        })))
+    }
+
+    /// Box3D's tree, two vec4 a node: lower bound (w: the right child, or a
+    /// leaf's first triangle) and upper bound (w: 0 for an inner node, else the
+    /// leaf's triangle count), indices as `f32::from_bits`. The left child
+    /// follows its parent.
+    pub fn nodes(&self) -> &[[f32; 4]] {
+        &self.0.nodes
+    }
+
+    /// Triangles in leaf order, three corners (vec4, w unused) each.
+    pub fn triangles(&self) -> &[[f32; 4]] {
+        &self.0.triangles
+    }
+
+    /// Body-space bounds.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        (self.0.lower, self.0.upper)
     }
 }
 
@@ -297,6 +492,9 @@ fn simulate(
         }
     }
 
+    // Replaced and removed colliders drop after the lock is released: dropping
+    // the last owner of a hull or mesh takes the lock to free it.
+    let mut stale = Vec::new();
     let _guard = NATIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: all IDs belong to this privately owned live world, the global lock
     // serializes native calls, input data was validated, and pointer arguments
@@ -310,6 +508,7 @@ fn simulate(
             }
             ffi::bb_body_destroy(body.id);
             entities.remove(&body.id);
+            stale.push(body.collider.clone());
             false
         });
         let world_id = physics.id;
@@ -317,7 +516,7 @@ fn simulate(
             &mut query
         {
             let input = state(&transform, &velocity);
-            let (kind, size) = collider.native();
+            let (kind, size, geometry) = collider.native();
             let material_values = material.native();
             let body = physics.bodies.entry(entity).or_insert_with(|| {
                 let id = ffi::bb_body_create(world_id, *body_type as i32, &input);
@@ -327,7 +526,7 @@ fn simulate(
                     id,
                     shape: 0,
                     body_type: *body_type,
-                    collider: *collider,
+                    collider: collider.clone(),
                     material: *material,
                     state: input,
                 }
@@ -340,10 +539,14 @@ fn simulate(
                 if body.shape != 0 {
                     ffi::bb_shape_destroy(body.shape);
                 }
-                body.shape =
-                    ffi::bb_shape_create(body.id, kind, size.as_ptr(), material_values.as_ptr());
+                body.shape = if geometry.is_null() {
+                    ffi::bb_shape_create(body.id, kind, size.as_ptr(), material_values.as_ptr())
+                } else {
+                    ffi::bb_shape_create_geometry(body.id, kind, geometry, material_values.as_ptr())
+                };
                 assert_ne!(body.shape, 0, "Box3D could not create a collider");
-                body.collider = *collider;
+                // The old mesh outlives its shape, which was destroyed above.
+                stale.push(std::mem::replace(&mut body.collider, collider.clone()));
                 body.material = *material;
             }
             let mut flags = 0;
