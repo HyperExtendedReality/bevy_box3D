@@ -278,13 +278,22 @@ fn convex_hull_rests_on_triangle_mesh_ground() {
     assert_eq!(floor.triangles().len(), 6);
     assert!(TriMesh::new(&[Vec3::ZERO; 3], &[[0, 1, 3]]).is_none());
     let corners: Vec<_> = (0..8)
-        .map(|i| Vec3::new((i & 1) as f32 - 0.5, ((i >> 1) & 1) as f32 - 0.5, (i >> 2) as f32 - 0.5))
+        .map(|i| {
+            Vec3::new(
+                (i & 1) as f32 - 0.5,
+                ((i >> 1) & 1) as f32 - 0.5,
+                (i >> 2) as f32 - 0.5,
+            )
+        })
         .collect();
     let cube = ConvexHull::new(&corners).expect("cube hull");
     assert_eq!(cube.planes().len(), 6);
     assert!(ConvexHull::new(&corners[..3]).is_none());
-    app.world_mut()
-        .spawn((RigidBody::Static, Collider::TriMesh(floor), Transform::default()));
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::TriMesh(floor),
+        Transform::default(),
+    ));
     let body = app
         .world_mut()
         .spawn((

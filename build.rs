@@ -22,19 +22,37 @@ fn main() {
         .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
         .collect();
     files.sort();
-    let mut build = cc::Build::new();
-    build
-        .files(files)
-        .file("native/bridge.c")
-        .include(source.join("include"))
-        .include(source.join("src"))
-        .std("c17")
-        .flag_if_supported("-ffp-contract=off");
-    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        build.flag("/fp:precise");
-    } else {
-        build.flag_if_supported("-pthread");
+    let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    let x86 = matches!(
+        env::var("CARGO_CFG_TARGET_ARCH").as_deref(),
+        Ok("x86_64" | "x86")
+    );
+    // Box3D's CMake builds its AVX2 solver with /arch:AVX2 on MSVC and picks
+    // it at run time; MSVC refuses to compile that file without the flag.
+    let (avx2, files): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|path| msvc && x86 && path.file_name().is_some_and(|name| name == "wide8.c"));
+    let configure = |build: &mut cc::Build| {
+        build
+            .include(source.join("include"))
+            .include(source.join("src"))
+            .std("c17")
+            .flag_if_supported("-ffp-contract=off");
+        if msvc {
+            build.flag("/fp:precise");
+        } else {
+            build.flag_if_supported("-pthread");
+        }
+    };
+    if !avx2.is_empty() {
+        let mut build = cc::Build::new();
+        configure(&mut build);
+        build.files(avx2).flag("/arch:AVX2");
+        build.compile("bevy_box3d_native_avx2");
     }
+    let mut build = cc::Build::new();
+    configure(&mut build);
+    build.files(files).file("native/bridge.c");
     build.compile("bevy_box3d_native");
     if env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("unix") {
         println!("cargo:rustc-link-lib=m");

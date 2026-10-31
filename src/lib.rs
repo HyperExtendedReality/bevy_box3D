@@ -247,7 +247,10 @@ impl TriMesh {
             || !fits(vertices.len())
             || !fits(indices.len())
             || !vertices.iter().all(|v| v.is_finite())
-            || indices.iter().flatten().any(|&i| i as usize >= vertices.len())
+            || indices
+                .iter()
+                .flatten()
+                .any(|&i| i as usize >= vertices.len())
         {
             return None;
         }
@@ -274,7 +277,11 @@ impl TriMesh {
             );
             (nodes, triangles)
         };
-        let root = |i: usize| nodes.get(i).map_or(Vec3::ZERO, |n| Vec3::new(n[0], n[1], n[2]));
+        let root = |i: usize| {
+            nodes
+                .get(i)
+                .map_or(Vec3::ZERO, |n| Vec3::new(n[0], n[1], n[2]))
+        };
         Some(Self(Arc::new(Geometry {
             native,
             mesh: true,
